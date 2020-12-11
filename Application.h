@@ -30,6 +30,7 @@ private:
 	void createLogicalDevice();
 	void createSwapchain();
 	void createImageViews();
+	void createRenderPass();
 	void createGraphicsPipeline();
 
 	bool isDeviceAvailable(vk::PhysicalDevice device);
@@ -63,8 +64,12 @@ private:
 	vk::SurfaceKHR surface;
 
 	vk::SwapchainKHR swapchain;
-	vk::Format swapchainFormat;
+	vk::Format swapchainImageFormat;
 	vk::Extent2D swapchainExtent;
 	std::vector<vk::Image> swapchainImages;
 	std::vector<vk::ImageView> swapchainImageViews;
+
+	vk::PipelineLayout pipelineLayout;
+	vk::RenderPass renderPass;
+	vk::Pipeline graphicsPipeline;
 };
