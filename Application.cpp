@@ -11,6 +11,8 @@ const std::vector<const char*> deviceExtensions =
 	VK_KHR_SWAPCHAIN_EXTENSION_NAME
 };
 
+const int MAX_FRAMES_IN_FLIGHT = 2;
+
 Application::Application(const std::string& name, int width, int height):
 	appName(name), windowWidth(width), windowHeight(height)
 {
@@ -29,6 +31,8 @@ int Application::run()
 	{
 		mainLoop();
 	}
+
+	device.waitIdle();
 	return 0;
 }
 
@@ -48,18 +52,37 @@ void Application::setupVulkan()
 	createLogicalDevice();
 	createSwapchain();
 	createImageViews();
+	createRenderPass();
 	createGraphicsPipeline();
+	createFramebuffers();
+	createCommandPool();
+	createCommandBuffers();
+	createSyncObjects();
 }
 
 void Application::mainLoop()
 {
 	glfwPollEvents();
+	drawFrame();
 }
 
 void Application::cleanUp()
 {
+	for (auto& semaphore : renderFinishedSemaphores)
+		device.destroySemaphore(semaphore);
+	for (auto& semaphore : imageAvailableSemaphores)
+		device.destroySemaphore(semaphore);
+	for (auto& fence : inFlightFences)
+		device.destroyFence(fence);
+
+	device.destroyCommandPool(commandPool);
+
+	for (auto framebuffer : swapchainFramebuffers)
+		device.destroyFramebuffer(framebuffer);
+
 	device.destroyPipeline(graphicsPipeline);
 	device.destroyPipelineLayout(pipelineLayout);
+	device.destroyRenderPass(renderPass);
 
 	for (auto imageView : swapchainImageViews)
 		device.destroyImageView(imageView);
@@ -285,11 +308,21 @@ void Application::createRenderPass()
 		.setColorAttachmentCount(1)
 		.setPColorAttachments(&colorAttachmentRef);
 
+	auto dependency = vk::SubpassDependency()
+		.setSrcSubpass(VK_SUBPASS_EXTERNAL)
+		.setDstSubpass(0)
+		.setSrcStageMask(vk::PipelineStageFlagBits::eColorAttachmentOutput)
+		.setSrcAccessMask(vk::AccessFlags())
+		.setDstStageMask(vk::PipelineStageFlagBits::eColorAttachmentOutput)
+		.setDstAccessMask(vk::AccessFlagBits::eColorAttachmentWrite);
+
 	auto renderPassInfo = vk::RenderPassCreateInfo()
 		.setAttachmentCount(1)
 		.setPAttachments(&colorAttachment)
 		.setSubpassCount(1)
-		.setPSubpasses(&subpass);
+		.setPSubpasses(&subpass)
+		.setDependencyCount(1)
+		.setPDependencies(&dependency);
 
 	renderPass = device.createRenderPass(renderPassInfo);
 }
@@ -327,7 +360,7 @@ void Application::createGraphicsPipeline()
 		.setWidth(swapchainExtent.width)
 		.setHeight(swapchainExtent.height)
 		.setMinDepth(0.0f)
-		.setMaxDepth(0.0f);
+		.setMaxDepth(1.0f);
 
 	auto scissor = vk::Rect2D()
 		.setOffset({ 0, 0 })
@@ -415,6 +448,131 @@ void Application::createGraphicsPipeline()
 
 	device.destroyShaderModule(vsModule);
 	device.destroyShaderModule(fsModule);
+}
+
+void Application::createFramebuffers()
+{
+	for (const auto& imageView : swapchainImageViews)
+	{
+		auto framebufferInfo = vk::FramebufferCreateInfo()
+			.setRenderPass(renderPass)
+			.setAttachmentCount(1)
+			.setPAttachments(&imageView)
+			.setWidth(swapchainExtent.width)
+			.setHeight(swapchainExtent.height)
+			.setLayers(1);
+
+		auto framebuffer = device.createFramebuffer(framebufferInfo);
+		swapchainFramebuffers.push_back(framebuffer);
+	}
+}
+
+void Application::createCommandPool()
+{
+	auto graphicsFamily = findQueueFamilies(physicalDevice).value().first;
+
+	auto commandPoolInfo = vk::CommandPoolCreateInfo()
+		.setQueueFamilyIndex(graphicsFamily);
+
+	commandPool = device.createCommandPool(commandPoolInfo);
+}
+
+void Application::createCommandBuffers()
+{
+	auto allocInfo = vk::CommandBufferAllocateInfo()
+		.setCommandPool(commandPool)
+		.setLevel(vk::CommandBufferLevel::ePrimary)
+		.setCommandBufferCount(swapchainFramebuffers.size());
+
+	commandBuffers = device.allocateCommandBuffers(allocInfo);
+
+	for (int i = 0; i < commandBuffers.size(); i++)
+	{
+		auto& commandBuffer = commandBuffers[i];
+		auto beginInfo = vk::CommandBufferBeginInfo();
+		commandBuffer.begin(beginInfo);
+
+		auto renderArea = vk::Rect2D()
+			.setOffset({ 0, 0 })
+			.setExtent(swapchainExtent);
+
+		auto clearColor = vk::ClearValue()
+			.setColor(std::array<float, 4>{ 0.0f, 0.0f, 0.0f, 1.0f });
+
+		auto renderPassBeginInfo = vk::RenderPassBeginInfo()
+			.setRenderPass(renderPass)
+			.setFramebuffer(swapchainFramebuffers[i])
+			.setRenderArea(renderArea)
+			.setClearValueCount(1)
+			.setPClearValues(&clearColor);
+
+		commandBuffer.beginRenderPass(renderPassBeginInfo, vk::SubpassContents::eInline);
+		commandBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics, graphicsPipeline);
+		commandBuffer.draw(3, 1, 0, 0);
+		commandBuffer.endRenderPass();
+		commandBuffer.end();
+	}
+}
+
+void Application::createSyncObjects()
+{
+	auto semaphoreInfo = vk::SemaphoreCreateInfo();
+	auto fenceInfo = vk::FenceCreateInfo()
+		.setFlags(vk::FenceCreateFlagBits::eSignaled);
+
+	for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+	{
+		auto availableSemaphore = device.createSemaphore(semaphoreInfo);
+		auto finishedSemaphore = device.createSemaphore(semaphoreInfo);
+		auto fence = device.createFence(fenceInfo);
+		imageAvailableSemaphores.push_back(availableSemaphore);
+		renderFinishedSemaphores.push_back(finishedSemaphore);
+		inFlightFences.push_back(fence);
+	}
+
+	imagesInFlight.resize(swapchainImages.size(), VK_NULL_HANDLE);
+}
+
+void Application::drawFrame()
+{
+	device.waitForFences({ inFlightFences[currentFrame] }, VK_TRUE, UINT64_MAX);
+
+	auto imageIndex = device.acquireNextImageKHR(swapchain, UINT64_MAX, imageAvailableSemaphores[currentFrame], VK_NULL_HANDLE).value;
+	if (imagesInFlight[imageIndex] != VK_NULL_HANDLE)
+		device.waitForFences({ inFlightFences[currentFrame] }, VK_TRUE, UINT64_MAX);
+
+	imagesInFlight[imageIndex] = inFlightFences[currentFrame];
+	
+	vk::Semaphore waitSemaphores[] = { imageAvailableSemaphores[currentFrame] };
+	vk::Semaphore signalSemaphores[] = { renderFinishedSemaphores[currentFrame] };
+	vk::PipelineStageFlags waitStages[] = { vk::PipelineStageFlagBits::eColorAttachmentOutput };
+
+	auto submitInfo = vk::SubmitInfo()
+		.setWaitSemaphoreCount(1)
+		.setPWaitSemaphores(waitSemaphores)
+		.setPWaitDstStageMask(waitStages)
+		.setCommandBufferCount(1)
+		.setPCommandBuffers(&commandBuffers[imageIndex])
+		.setSignalSemaphoreCount(1)
+		.setPSignalSemaphores(signalSemaphores);
+
+	device.resetFences({ inFlightFences[currentFrame] });
+
+	graphicsQueue.submit(1, &submitInfo, inFlightFences[currentFrame]);
+
+	vk::SwapchainKHR swapchains[] = { swapchain };
+
+	auto presentInfo = vk::PresentInfoKHR()
+		.setWaitSemaphoreCount(1)
+		.setPWaitSemaphores(signalSemaphores)
+		.setSwapchainCount(1)
+		.setPSwapchains(swapchains)
+		.setPImageIndices(&imageIndex);
+
+	presentQueue.presentKHR(presentInfo);
+	presentQueue.waitIdle();
+
+	currentFrame = (currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
 }
 
 bool Application::isDeviceAvailable(vk::PhysicalDevice device)

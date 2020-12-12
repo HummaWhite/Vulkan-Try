@@ -32,6 +32,12 @@ private:
 	void createImageViews();
 	void createRenderPass();
 	void createGraphicsPipeline();
+	void createFramebuffers();
+	void createCommandPool();
+	void createCommandBuffers();
+	void createSyncObjects();
+
+	void drawFrame();
 
 	bool isDeviceAvailable(vk::PhysicalDevice device);
 	std::optional<std::pair<uint32_t, uint32_t>> findQueueFamilies(vk::PhysicalDevice device);
@@ -72,4 +78,14 @@ private:
 	vk::PipelineLayout pipelineLayout;
 	vk::RenderPass renderPass;
 	vk::Pipeline graphicsPipeline;
+	std::vector<vk::Framebuffer> swapchainFramebuffers;
+
+	vk::CommandPool commandPool;
+	std::vector<vk::CommandBuffer> commandBuffers;
+
+	std::vector<vk::Semaphore> imageAvailableSemaphores;
+	std::vector<vk::Semaphore> renderFinishedSemaphores;
+	std::vector<vk::Fence> inFlightFences;
+	std::vector<vk::Fence> imagesInFlight;
+	int currentFrame = 0;
 };
